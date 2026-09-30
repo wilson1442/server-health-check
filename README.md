@@ -42,7 +42,7 @@ Send a message in the target chat, then:
 curl "https://api.telegram.org/bot<YOUR TOKEN>/getUpdates" | grep -o '"id":[^-]*' | head -1
 ```
 
-The chat ID will look like `-100xxxxxxxxx` for groups/channels.
+"The chat ID will look like `-100xxxxxxxxx` for groups/channels."
 
 ### 4. Deploy the script
 
