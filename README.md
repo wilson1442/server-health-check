@@ -15,6 +15,13 @@ Automated server health monitoring for Ubuntu/Proxmox — sends formatted report
 
 ## Setup
 
+### Clone the repo
+
+```bash
+git clone https://github.com/wilson1442/server-health-check.git
+cd server-health-check
+```
+
 ### 1. Install prerequisites (as root)
 
 ```bash
