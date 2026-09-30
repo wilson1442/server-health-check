@@ -4,7 +4,7 @@
 # Collects system health metrics and sends a formatted report via Telegram.
 #
 # PREREQUISITES (run as root):
-#   apt install -y smartmontools mdadm lm-sensors cron curl procps
+#   apt install -y curl iproute2 procps util-linux smartmontools mdadm cron
 #
 # SETUP:
 #   1. Create a Telegram bot with @BotFather -> get BOT_TOKEN
@@ -12,11 +12,11 @@
 #      Send a message to the bot in the target chat, then:
 #        curl "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates" | \
 #          grep -o '"id":[^-]*' | head -1
-#   3. Copy here and make executable:
-#        cp server-health-check.sh /usr/local/sbin/ && chmod +x /usr/local/sbin/server-health-check.sh
+#   3. Install the script:
+#        install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check
 #   4. Add to root crontab (crontab -e), every 4 hours:
 #        0 */4 * * * env TELEGRAM_BOT_TOKEN="TOKEN" TELEGRAM_CHAT_ID="-ID" \
-#              /usr/local/sbin/server-health-check.sh >> /var/log/health-check.log 2>&1
+#              /usr/local/sbin/server-health-check >> /var/log/health-check.log 2>&1
 ###############################################################################
 
 set -uo pipefail
@@ -31,12 +31,11 @@ UPTIME_STR="$(uptime -p 2>/dev/null || uptime | sed 's/.*,//' | xargs)"
 
 HAS_SM=$(command -v smartctl &>/dev/null && echo 1 || echo 0)
 HAS_MD=$(command -v mdadm &>/dev/null && echo 1 || echo 0)
-HAS_SN=$(command -v sensors &>/dev/null && echo 1 || echo 0)
-
 # Thresholds
 TEMP_WARN_C=55
 TEMP_CRIT_C=70
 DISK_WARN_PCT=80
+DISK_CRIT_PCT=95
 MEM_WARN_PCT=80
 MEM_CRIT_PCT=90
 LOAD_WARN_RATIO=4   # load avg per core
@@ -46,32 +45,50 @@ overall_status="OK"
 RPT=""
 
 # --- Helpers -----------------------------------------------------------------
-ok_icon()     { printf "▬✔ %s  " "$1"; }
-warn_icon()   { printf "▬◻ %s  " "$1"; }
-crit_icon()   { printf "▬✘ %s  " "$1"; }
+add_result() {
+    local severity="$1"
+    local icon="$2"
+    local text="$3"
+
+    RPT+="▬${icon} ${text}"$'\n'
+    printf "▬%s %s\n" "$icon" "$text"
+
+    case "$severity" in
+        CRITICAL)
+            overall_status="CRITICAL"
+            ;;
+        WARN)
+            [[ "$overall_status" == "OK" ]] && overall_status="WARN"
+            ;;
+    esac
+}
+
+ok_icon()   { add_result "OK" "✔" "$1"; }
+warn_icon() { add_result "WARN" "◻" "$1"; }
+crit_icon() { add_result "CRITICAL" "✘" "$1"; }
 
 # --- 1. System overview ------------------------------------------------------
-RPT+="🖥️ *System*\n"
-RPT+="_Host:_ \`${HOST}\`  |_ OS:_ ${OSVER}  |_ Uptime:_ \`${UPTIME_STR}\`\n\n"
+RPT+="🖥️ *System*"$'\n'
+RPT+="_Host:_ \`${HOST}\`  |_ OS:_ ${OSVER}  |_ Uptime:_ \`${UPTIME_STR}\`"$'\n\n'
 
 CPU_MODEL="$(grep -m1 '^model name' /proc/cpuinfo | cut -d':' -f2- | xargs 2>/dev/null || echo 'unknown')"
 N_CORES="$(egrep -c '^processor' /proc/cpuinfo)"
 LOAD1="$(awk '{print $1}' < /proc/loadavg)"
 CUR_RATIO=$(awk "BEGIN{printf \"%.2f\", ${LOAD1}/${N_CORES}}")
 
-RPT+="- 💻 \`${CPU_MODEL}\`\n"
-RPT+="- 🕹️  Cores: \`${N_CORES} | Ratio: ${CUR_RATIO}/core\`\n\n"
+RPT+="- 💻 \`${CPU_MODEL}\`"$'\n'
+RPT+="- 🕹️  Cores: \`${N_CORES} | Ratio: ${CUR_RATIO}/core\`"$'\n\n'
 
 # Check load ratio (store awk output first to avoid nested $() issues)
 LOAD_HIGH=$(awk "BEGIN{v=${LOAD1}/${N_CORES}; print (v > ${LOAD_WARN_RATIO}) ? 1 : 0}")
 if [ "$LOAD_HIGH" -eq 1 ]; then
-    warn_icon "High load (${CUR_RATIO}/core)" && overall_status="WARN"
+    warn_icon "High load (${CUR_RATIO}/core)"
 else
     ok_icon "Load OK"
 fi
 
 # --- 2. Memory ---------------------------------------------------------------
-RPT+='\n*▸ Memory*\n'
+RPT+=$'\n*▸ Memory*\n'
 TOTAL_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 AVAIL_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null \
     || awk '/^MemFree:/ && !f{ f=1; print $2 }' /proc/meminfo)
@@ -91,19 +108,18 @@ else
     USED_H=$(awk "BEGIN{printf \"%.0fMi\", $USED_KB/1024}")
 fi
 
-RPT+="- 🧠 ${TOTAL_GIB} Gi  used: \`$USED_H (${MEM_PCT}%)\`\n"
+RPT+="- 🧠 ${TOTAL_GIB} Gi  used: \`$USED_H (${MEM_PCT}%)\`"$'\n'
 
 if (( MEM_PCT >= MEM_CRIT_PCT )); then
-    crit_icon "Memory critical: ${MEM_PCT}%" && overall_status="CRITICAL"
+    crit_icon "Memory critical: ${MEM_PCT}%"
 elif (( MEM_PCT >= MEM_WARN_PCT )); then
     warn_icon "Memory elevated: ${MEM_PCT}%"
-    [ "$overall_status" != "CRITICAL" ] && overall_status="WARN"
 else
     ok_icon "Memory OK"
 fi
 
 # --- 3. Filesystems (df) -----------------------------------------------------
-RPT+='*▸ Filesystems*\n'
+RPT+='*▸ Filesystems*'$'\n'
 
 while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -114,60 +130,63 @@ while IFS= read -r line; do
     FS_USED=$(echo "$line" | awk '{print $4}')
     FS_PCT=$(echo "$line" | awk '{gsub(/%/,"",$5); print $5+0}')
 
-    if (( FS_PCT >= 95 )); then
-        crit_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used (\`$FS_SIZE\`)" && overall_status="CRITICAL"
-    elif (( FS_PCT >= 80 )); then
+    if (( FS_PCT >= DISK_CRIT_PCT )); then
+        crit_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used (\`$FS_SIZE\`)"
+    elif (( FS_PCT >= DISK_WARN_PCT )); then
         warn_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used"
-        [ "$overall_status" != "CRITICAL" ] && overall_status="WARN"
     else
         ok_icon "${FS_MNT}: ${FS_PCT}% used"
     fi
 done < <(df --output=source,target,size,used,pcent 2>/dev/null | grep '/dev/' | tail -n +2)
 
 # --- 4. SMART / drive health & temperatures ------------------------------------
-RPT+='\n*▸ Drives (SMART)*\n'
+RPT+=$'\n*▸ Drives (SMART)*\n'
 
 if (( HAS_SM == 0 )); then
     warn_icon "smartctl not installed"
 else
-    for dev in /dev/sd[a-z] /dev/nvme[0-9]*; do
-        [[ -e "$dev" ]] || continue
+    mapfile -t smart_devices < <(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')
 
-        # Derive real device (strip partition suffix)
-        base_name=$(basename "$dev" | sed 's/[0-9]*$//')
-        real_dev="/dev/${base_name}"
+    if (( ${#smart_devices[@]} == 0 )); then
+        warn_icon "No physical disks found"
+    fi
 
-        # Skip if this is a sub-partition of an already-seen drive
-        grep -q "^$(basename $real_dev)\$" <<< "$(echo "${seen_drives_raw:-}" | tr '\n' '\n')" 2>/dev/null && continue
-        seen_drives_raw+="${real_dev}"$'\n'
+    for real_dev in "${smart_devices[@]}"; do
+        [[ -b "$real_dev" ]] || continue
 
         # SMART overall health ("PASSED" or "FAILURE")
-        smart_out=$(smartctl -H "$dev" 2>/dev/null || echo "unreadable")
+        smart_out=$(smartctl -H "$real_dev" 2>/dev/null || true)
         if echo "$smart_out" | grep -qi 'PASSED'; then
             ok_icon "${real_dev}: SMART passed"
-        elif echo "$smart_out" | grep -qi 'Failing'; then
-            crit_icon "${real_dev}: SMART FAILED — replace drive!" && overall_status="CRITICAL"
+        elif echo "$smart_out" | grep -Eqi 'FAILED|FAILURE|Failing'; then
+            crit_icon "${real_dev}: SMART FAILED — replace drive!"
         else
-            warn_icon "${real_dev}: status unknown (\`$(echo "$smart_out" | sed -n '/^SMART Overall/p' | awk -F: '{gsub(/^ *| *$/,"",$2)}')\`)"
+            warn_icon "${real_dev}: SMART status unavailable"
         fi
 
-        # Temperature (first occurrence of a non-identical temperature)
-        temp=$(smartctl -A "$dev" 2>/dev/null \
-            | grep 'Temperature_Celsius' \
-            | awk 'NR==1{for(i=1;i<=NF;i++) if($i+0>0 && $(i-1)="\"Temperature\"") print $i}')
-
-        # Simpler approach: use the last numeric field
-        temp=$(smartctl -A "$dev" 2>/dev/null \
-            | grep 'Celsius' \
-            | head -1 \
-            | awk '{for(i=1;i<=NF;i++){if($i~/[0-9]/ && $i+0>30 && $i+0<150){print $i;exit}}}')
+        # NVMe reports "Temperature: 35 Celsius". ATA SMART attributes 190/194
+        # store the current temperature in the raw value near the end of the row.
+        smart_attrs=$(smartctl -A "$real_dev" 2>/dev/null || true)
+        temp=$(awk '
+            /^[[:space:]]*Temperature:[[:space:]]*[0-9]+/ {
+                print $2
+                exit
+            }
+            /^[[:space:]]*(190|194)[[:space:]]/ || /Temperature_Celsius|Airflow_Temperature_Cel/ {
+                for (i = NF; i >= 1; i--) {
+                    if ($i ~ /^[0-9]+$/) {
+                        print $i
+                        exit
+                    }
+                }
+            }
+        ' <<< "$smart_attrs")
 
         if [[ "$temp" =~ ^[0-9]+$ ]]; then
             if (( temp >= TEMP_CRIT_C )); then
-                crit_icon "🌡️ ${real_dev}: ${temp}°C" && overall_status="CRITICAL"
+                crit_icon "🌡️ ${real_dev}: ${temp}°C"
             elif (( temp >= TEMP_WARN_C )); then
                 warn_icon "🌡️ ${real_dev}: ${temp}°C"
-                [ "$overall_status" != "CRITICAL" ] && overall_status="WARN"
             else
                 ok_icon "🌡️ ${real_dev}: ${temp}°C"
             fi
@@ -176,7 +195,7 @@ else
 fi
 
 # --- 5. mdadm RAID status ----------------------------------------------------
-RPT+='\n*▸ RAID (mdadm)*\n'
+RPT+=$'\n*▸ RAID (mdadm)*\n'
 
 if (( HAS_MD == 0 )); then
     warn_icon "mdadm not installed"
@@ -185,26 +204,30 @@ else
     while IFS= read -r mdname; do
         [[ "$mdname" =~ ^md ]] || continue
         dev="/dev/${mdname}"
-        [[ -e "$dev" ]] || break
+        [[ -e "$dev" ]] || continue
 
         level=$(mdadm --detail "$dev" 2>/dev/null | grep 'Raid Level'   | sed 's/.*: *//')
         state=$(mdadm --detail "$dev" 2>/dev/null | grep 'State :'      | sed 's/.*: //')
         sync=$(mdadm --detail "$dev" 2>/dev/null | grep 'Rebuild Stat'  | sed 's/.*: //')
+        mdstat_state=$(awk -v name="$mdname" '
+            $1 == name { found=1; next }
+            found && /^[[:space:]]/ { print; next }
+            found { exit }
+        ' /proc/mdstat 2>/dev/null)
 
         msg="[${level:-?}] ${state}"
 
-        if echo "$state" | grep -qi '\bdegraded\b\|failed\|Fail'; then
-            crit_icon "RAID ${mdname}: ${msg}" && overall_status="CRITICAL"
-        elif echo "$state" | grep -q 'rebuild\|resync'; then
-            warn_icon "RAID ${mdname}: rebuilding — ${msg}"
-            [ "$overall_status" != "CRITICAL" ] && overall_status="WARN"
+        if echo "${state} ${mdstat_state}" | grep -Eqi 'degraded|failed|faulty|\[[U_]*_[U_]*\]'; then
+            crit_icon "RAID ${mdname}: ${msg}"
+        elif echo "${state} ${mdstat_state}" | grep -Eqi 'rebuild|resync|recover|reshape|check|repair'; then
+            warn_icon "RAID ${mdname}: maintenance in progress — ${msg}"
         else
             ok_icon "RAID ${mdname}: ${msg}"
         fi
 
         # Show sync progress if applicable
         if [[ -n "${sync:-}" ]]; then
-            RPT+="   ▬🔧 Sync: \`${sync}\`\n"
+            RPT+="   ▬🔧 Sync: \`${sync}\`"$'\n'
         fi
     done < <(grep '^md' /proc/mdstat 2>/dev/null | awk '{print $1}')
 
@@ -215,11 +238,14 @@ else
 fi
 
 # --- 6. Network ------------------------------------------------------------
-RPT+='\n*▸ Network*\n'
+RPT+=$'\n*▸ Network*\n'
 
-GW="$(awk '$1=="default"{print $3}' /proc/net/route 2>/dev/null | head -c 64 | xargs)"
+DEFAULT_ROUTE="$(ip -4 route show default 2>/dev/null | head -1)"
+GW="$(awk '{for (i=1; i<=NF; i++) if ($i == "via") {print $(i+1); exit}}' <<< "$DEFAULT_ROUTE")"
 if [[ -n "$GW" ]]; then
     ok_icon "Gateway: \`${GW}\`"
+elif [[ -n "$DEFAULT_ROUTE" ]]; then
+    ok_icon "Default route: \`${DEFAULT_ROUTE}\`"
 else
     warn_icon "No default route"
 fi
@@ -235,11 +261,11 @@ DNS_SERVERS="$(grep 'nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}'
 [[ -n "${DNS_SERVERS:-}" ]] && RPT+="- DNS: \`${DNS_SERVERS}\`"$'\n' 
 
 # External IP (optional, skip on failure)
-EXT_IP=$(curl -s --max-time 3 http://ifconfig.me 2>/dev/null)
+EXT_IP=$(curl -fsS --max-time 3 https://ifconfig.me 2>/dev/null || true)
 [[ -n "$EXT_IP" ]] && RPT+="_External:_ \`${EXT_IP}\`_"$'\n'
 
 # --- 7. Swap ---------------------------------------------------------------
-RPT+='\n*▸ Swap*\n'
+RPT+=$'\n*▸ Swap*\n'
 SWAP_TOTAL=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
 SWAP_FREE=$(awk '/^SwapFree:/{print $2}' /proc/meminfo)
 SWAP_USED=$(( SWAP_TOTAL - SWAP_FREE ))
@@ -259,7 +285,7 @@ else
 fi
 
 # --- 8. Last reboot --------------------------------------------------------
-RPT+='\n*▸ Boot time*\n'
+RPT+=$'\n*▸ Boot time*\n'
 LAST_REBOOT=$(who -b 2>/dev/null | awk '{print $3, $4}' || echo 'unknown')
 RPT+="🔃 \`${LAST_REBOOT}\`"$'\n'
 
@@ -277,11 +303,9 @@ if (( ${#message} > 4000 )); then
     message="${message:0:3997}"$'\n'"... (truncated)"
 fi
 
-sent=false
-
 send_tg() {
     local resp
-    resp=$(curl -s --connect-timeout 5 \
+    resp=$(curl -sS --connect-timeout 5 --max-time 15 \
         "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         -F "chat_id=${CHAT_ID}" \
         -F "parse_mode=Markdown" \
@@ -294,7 +318,7 @@ send_tg() {
     # Rate-limit / network fallback (429 Too Many Requests)
     if echo "$resp" | grep -qi 'retry'; then
         sleep 15
-        resp=$(curl -s --connect-timeout 5 \
+        resp=$(curl -sS --connect-timeout 5 --max-time 15 \
             "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
             -F "chat_id=${CHAT_ID}" \
             -F "parse_mode=Markdown" \
@@ -304,9 +328,9 @@ send_tg() {
     echo "$resp" | grep -q '"ok":true' && return 0 || return 1
 }
 
-if send_tg; then
-    sent=true
+if ! send_tg; then
+    printf 'Failed to send health report to Telegram.\n' >&2
+    exit 1
 fi
 
-# Exit status: 0 = OK at worst, but we log anyway
 exit 0
