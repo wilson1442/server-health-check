@@ -102,7 +102,7 @@ fi
 
 TOTAL_GIB=$(awk "BEGIN{printf \"%.1f\", ${TOTAL_KB}/1024/1024}")
 
-if (( TOTAL_GIB >= 8 )); then
+if (( TOTAL_KB >= 8 * 1024 * 1024 )); then
     USED_H=$(awk "BEGIN{printf \"%.1fGi\", ($USED_KB/$TOTAL_KB)*${TOTAL_GIB}}")
 else
     USED_H=$(awk "BEGIN{printf \"%.0fMi\", $USED_KB/1024}")
@@ -293,7 +293,8 @@ RPT+="🔃 \`${LAST_REBOOT}\`"$'\n'
 declare -A STATUS_EMOJI=( [OK]="✅" [WARN]="⚠️" [CRITICAL]="🔴" )
 emoji="${STATUS_EMOJI[$overall_status]:-✅}"
 
-RPT+='*'$'\n'"${emoji} *Overall Status:* \`${overall_status}\`"$'\n' '*'
+RPT+=$'\n'
+RPT+="${emoji} *Overall Status:* \`${overall_status}\`"$'\n'
 
 # --- Send to Telegram -------------------------------------------------------
 message="$RPT"
@@ -325,7 +326,12 @@ send_tg() {
             -F "text=${message}")
     fi
     
-    echo "$resp" | grep -q '"ok":true' && return 0 || return 1
+    if echo "$resp" | grep -q '"ok":true'; then
+        return 0
+    fi
+
+    printf 'Telegram API response: %s\n' "${resp:-<empty response>}" >&2
+    return 1
 }
 
 if ! send_tg; then
