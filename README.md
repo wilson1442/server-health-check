@@ -74,9 +74,9 @@ Add this line to run the check every four hours:
 Pull the latest version from the cloned repository, then reinstall the script:
 
 ```bash
-cd /path/to/server-health-check
+cd ~/server-health-check
 git pull --ff-only origin main
-install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check
+install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check.sh
 ```
 
 ## Default thresholds
