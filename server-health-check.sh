@@ -13,10 +13,10 @@
 #        curl "https://api.telegram.org/bot${BOT_TOKEN}/getUpdates" | \
 #          grep -o '"id":[^-]*' | head -1
 #   3. Install the script:
-#        install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check
+#        install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check.sh
 #   4. Add to root crontab (crontab -e), every 4 hours:
 #        0 */4 * * * env TELEGRAM_BOT_TOKEN="TOKEN" TELEGRAM_CHAT_ID="-ID" \
-#              /usr/local/sbin/server-health-check >> /var/log/health-check.log 2>&1
+#              /usr/local/sbin/server-health-check.sh >> /var/log/health-check.log 2>&1
 ###############################################################################
 
 set -uo pipefail
@@ -31,6 +31,7 @@ UPTIME_STR="$(uptime -p 2>/dev/null || uptime | sed 's/.*,//' | xargs)"
 
 HAS_SM=$(command -v smartctl &>/dev/null && echo 1 || echo 0)
 HAS_MD=$(command -v mdadm &>/dev/null && echo 1 || echo 0)
+HAS_ZPOOL=$(command -v zpool &>/dev/null && echo 1 || echo 0)
 # Thresholds
 TEMP_WARN_C=55
 TEMP_CRIT_C=70
@@ -241,7 +242,71 @@ else
     fi
 fi
 
-# --- 6. Network ------------------------------------------------------------
+# --- 6. ZFS pool status -----------------------------------------------------
+RPT+=$'\nZFS POOLS\n'
+
+if (( HAS_ZPOOL == 0 )); then
+    RPT+="ℹ️ zpool not installed — skipped"$'\n'
+else
+    zpool_count=0
+
+    while IFS=$'\t' read -r pool health size alloc free capacity; do
+        [[ -n "$pool" ]] || continue
+        (( zpool_count += 1 ))
+
+        capacity_pct="${capacity%%%}"
+        [[ "$capacity_pct" =~ ^[0-9]+$ ]] || capacity_pct=0
+        pool_result="${pool}: ${health}, ${capacity_pct}% used (${alloc} of ${size})"
+
+        if [[ "$health" != "ONLINE" ]]; then
+            crit_icon "$pool_result"
+        elif (( capacity_pct >= DISK_CRIT_PCT )); then
+            crit_icon "$pool_result"
+        elif (( capacity_pct >= DISK_WARN_PCT )); then
+            warn_icon "$pool_result"
+        else
+            ok_icon "$pool_result"
+        fi
+
+        pool_status=$(zpool status "$pool" 2>/dev/null || true)
+        if [[ -z "$pool_status" ]]; then
+            warn_icon "${pool}: unable to read detailed zpool status"
+            continue
+        fi
+
+        scan_status=$(awk '
+            /^[[:space:]]*scan:/ {
+                sub(/^[[:space:]]*scan:[[:space:]]*/, "")
+                print
+                exit
+            }
+        ' <<< "$pool_status")
+
+        if echo "$scan_status" | grep -Eqi 'resilver.*in progress'; then
+            warn_icon "${pool}: ${scan_status}"
+        elif [[ -n "$scan_status" ]]; then
+            RPT+="   🔍 Scan: ${scan_status}"$'\n'
+        fi
+
+        data_errors=$(awk '
+            /^[[:space:]]*errors:/ {
+                sub(/^[[:space:]]*errors:[[:space:]]*/, "")
+                print
+                exit
+            }
+        ' <<< "$pool_status")
+
+        if [[ -n "$data_errors" ]] && ! echo "$data_errors" | grep -qi 'No known data errors'; then
+            crit_icon "${pool}: ${data_errors}"
+        fi
+    done < <(zpool list -H -o name,health,size,alloc,free,capacity 2>/dev/null)
+
+    if (( zpool_count == 0 )); then
+        RPT+="ℹ️ No imported ZFS pools found"$'\n'
+    fi
+fi
+
+# --- 7. Network ------------------------------------------------------------
 RPT+=$'\nNETWORK\n'
 
 DEFAULT_ROUTE="$(ip -4 route show default 2>/dev/null | head -1)"
@@ -272,7 +337,7 @@ fi
 EXT_IP=$(curl -fsS --max-time 3 https://ifconfig.me 2>/dev/null || true)
 [[ -n "$EXT_IP" ]] && RPT+="External IP: ${EXT_IP}"$'\n'
 
-# --- 7. Swap ---------------------------------------------------------------
+# --- 8. Swap ---------------------------------------------------------------
 RPT+=$'\nSWAP\n'
 SWAP_TOTAL=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
 SWAP_FREE=$(awk '/^SwapFree:/{print $2}' /proc/meminfo)
@@ -292,7 +357,7 @@ else
     ok_icon "Swap OK"
 fi
 
-# --- 8. Last reboot --------------------------------------------------------
+# --- 9. Last reboot --------------------------------------------------------
 RPT+=$'\nBOOT\n'
 LAST_REBOOT=$(uptime -s 2>/dev/null || who -b 2>/dev/null | awk '{print $3, $4}')
 RPT+="Last reboot: ${LAST_REBOOT:-unknown}"$'\n'

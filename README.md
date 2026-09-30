@@ -9,6 +9,7 @@ health and sends one summary to Telegram.
 - Mounted filesystem usage
 - SMART health and disk temperature
 - Linux software RAID (`mdadm`)
+- ZFS pool health, capacity, scans/resilvers, and data errors
 - Default route, local addresses, DNS, and external IP
 - Swap use and last boot time
 
@@ -26,11 +27,13 @@ apt install -y curl iproute2 procps util-linux smartmontools mdadm cron
 
 git clone https://github.com/wilson1442/server-health-check.git
 cd server-health-check
-install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check
+install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check.sh
 ```
 
 `smartmontools` and `mdadm` are optional if the server does not use those
-features. Their absence is reported as a warning.
+features. Their absence is reported as a warning. ZFS pools are checked when
+the `zpool` command (provided by `zfsutils-linux`) is available; otherwise that
+section is skipped without changing the overall status.
 
 ## Configure Telegram
 
@@ -50,7 +53,7 @@ Group and channel IDs are usually negative, such as `-1001234567890`.
 ```bash
 TELEGRAM_BOT_TOKEN="<YOUR_TOKEN>" \
 TELEGRAM_CHAT_ID="<YOUR_CHAT_ID>" \
-/usr/local/sbin/server-health-check
+/usr/local/sbin/server-health-check.sh
 ```
 
 The command exits with a non-zero status if Telegram delivery fails.
@@ -66,7 +69,7 @@ crontab -e
 Add this line to run the check every four hours:
 
 ```cron
-0 */4 * * * TELEGRAM_BOT_TOKEN="<YOUR_TOKEN>" TELEGRAM_CHAT_ID="<YOUR_CHAT_ID>" /usr/local/sbin/server-health-check >> /var/log/health-check.log 2>&1
+0 */4 * * * TELEGRAM_BOT_TOKEN="<YOUR_TOKEN>" TELEGRAM_CHAT_ID="<YOUR_CHAT_ID>" /usr/local/sbin/server-health-check.sh >> /var/log/health-check.log 2>&1
 ```
 
 ## Update
@@ -85,6 +88,7 @@ install -m 0755 server-health-check.sh /usr/local/sbin/server-health-check.sh
 |---|---:|---:|
 | Disk temperature | 55°C | 70°C |
 | Filesystem usage | 80% | 95% |
+| ZFS pool usage | 80% | 95% |
 | Memory usage | 80% | 90% |
 | Load per CPU core | Above 4.0 | — |
 | Swap usage | 30% | 80% |
