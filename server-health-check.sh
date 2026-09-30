@@ -215,7 +215,8 @@ else
             found { exit }
         ' /proc/mdstat 2>/dev/null)
 
-        msg="[${level:-?}] ${state}"
+        # Square brackets start a link entity in Telegram's Markdown parser.
+        msg="\\[${level:-?}\\] ${state}"
 
         if echo "${state} ${mdstat_state}" | grep -Eqi 'degraded|failed|faulty|\[[U_]*_[U_]*\]'; then
             crit_icon "RAID ${mdname}: ${msg}"
@@ -304,26 +305,47 @@ if (( ${#message} > 4000 )); then
     message="${message:0:3997}"$'\n'"... (truncated)"
 fi
 
+telegram_request() {
+    local parse_mode="${1:-}"
+    local -a form_args=(
+        -F "chat_id=${CHAT_ID}"
+        -F "text=${message}"
+    )
+
+    if [[ -n "$parse_mode" ]]; then
+        form_args+=( -F "parse_mode=${parse_mode}" )
+    fi
+
+    curl -sS --connect-timeout 5 --max-time 15 \
+        "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+        "${form_args[@]}"
+}
+
 send_tg() {
     local resp
-    resp=$(curl -sS --connect-timeout 5 --max-time 15 \
-        "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-        -F "chat_id=${CHAT_ID}" \
-        -F "parse_mode=Markdown" \
-        -F "text=${message}")
+    local parse_mode="Markdown"
+
+    resp=$(telegram_request "$parse_mode")
     
     if echo "$resp" | grep -q '"ok":true'; then
         return 0
     fi
     
+    # A machine-provided value may contain Telegram Markdown control characters.
+    # Deliver as plain text rather than dropping the entire health report.
+    if echo "$resp" | grep -qi "can't parse entities"; then
+        parse_mode=""
+        resp=$(telegram_request "$parse_mode")
+        if echo "$resp" | grep -q '"ok":true'; then
+            printf 'Telegram rejected Markdown; report sent as plain text.\n' >&2
+            return 0
+        fi
+    fi
+
     # Rate-limit / network fallback (429 Too Many Requests)
     if echo "$resp" | grep -qi 'retry'; then
         sleep 15
-        resp=$(curl -sS --connect-timeout 5 --max-time 15 \
-            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -F "chat_id=${CHAT_ID}" \
-            -F "parse_mode=Markdown" \
-            -F "text=${message}")
+        resp=$(telegram_request "$parse_mode")
     fi
     
     if echo "$resp" | grep -q '"ok":true'; then
