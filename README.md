@@ -36,13 +36,30 @@ apt install -y smartmontools mdadm lm-sensors cron curl procps
 
 ### 3. Get your chat/group ID
 
-Send a message in the target chat, then:
+**Important:** Your bot returns no data until someone messages it first.
+
+#### Option A: Direct message (single person)
+
+Open Telegram → search for your bot's username → send any message (e.g. `/start`).
+That activates the bot — then getUpdates will return **your chat ID**:
 
 ```bash
-curl "https://api.telegram.org/bot<YOUR TOKEN>/getUpdates" | grep -o '"id":[^-]*' | head -1
+curl "https://api.telegram.org/bot<YOUR TOKEN>/getUpdates" | python3 -m json.tool
 ```
 
-"The chat ID will look like `-100xxxxxxxxx` for groups/channels."
+Find `"chat":{"id":-100xxxxxxxxx}` (or just a plain number for DMs). That's your `TELEGRAM_CHAT_ID`.
+
+#### Option B: Group or channel
+
+1. Add your bot to the group/channel as an admin
+2. Have anyone send **any message** in that group — this activates it
+3. Run getUpdates and find that group's ID (always starts with `-`):
+
+```bash
+curl "https://api.telegram.org/bot<YOUR TOKEN>/getUpdates" | python3 -m json.tool
+```
+
+Look for the `"chat":{"id":-100xxxxxxxxx,"`. That negative integer is your `TELEGRAM_CHAT_ID`.
 
 ### 4. Deploy the script
 
