@@ -43,6 +43,7 @@ LOAD_WARN_RATIO=4   # load avg per core
 overall_status="OK"
 
 RPT=""
+declare -a ISSUES=()
 
 # --- Helpers -----------------------------------------------------------------
 add_result() {
@@ -50,45 +51,48 @@ add_result() {
     local icon="$2"
     local text="$3"
 
-    RPT+="▬${icon} ${text}"$'\n'
-    printf "▬%s %s\n" "$icon" "$text"
+    RPT+="${icon} ${text}"$'\n'
+    printf "%s %s\n" "$icon" "$text"
 
     case "$severity" in
         CRITICAL)
             overall_status="CRITICAL"
+            ISSUES+=("$text")
             ;;
         WARN)
             [[ "$overall_status" == "OK" ]] && overall_status="WARN"
+            ISSUES+=("$text")
             ;;
     esac
 }
 
-ok_icon()   { add_result "OK" "✔" "$1"; }
-warn_icon() { add_result "WARN" "◻" "$1"; }
-crit_icon() { add_result "CRITICAL" "✘" "$1"; }
+ok_icon()   { add_result "OK" "✅" "$1"; }
+warn_icon() { add_result "WARN" "⚠️" "$1"; }
+crit_icon() { add_result "CRITICAL" "🔴" "$1"; }
 
 # --- 1. System overview ------------------------------------------------------
-RPT+="🖥️ *System*"$'\n'
-RPT+="_Host:_ \`${HOST}\`  |_ OS:_ ${OSVER}  |_ Uptime:_ \`${UPTIME_STR}\`"$'\n\n'
+RPT+="SYSTEM"$'\n'
+RPT+="OS: ${OSVER}"$'\n'
+RPT+="Uptime: ${UPTIME_STR}"$'\n'
 
 CPU_MODEL="$(grep -m1 '^model name' /proc/cpuinfo | cut -d':' -f2- | xargs 2>/dev/null || echo 'unknown')"
 N_CORES="$(egrep -c '^processor' /proc/cpuinfo)"
 LOAD1="$(awk '{print $1}' < /proc/loadavg)"
 CUR_RATIO=$(awk "BEGIN{printf \"%.2f\", ${LOAD1}/${N_CORES}}")
 
-RPT+="- 💻 \`${CPU_MODEL}\`"$'\n'
-RPT+="- 🕹️  Cores: \`${N_CORES} | Ratio: ${CUR_RATIO}/core\`"$'\n\n'
+RPT+="CPU: ${CPU_MODEL}"$'\n'
+RPT+="Cores: ${N_CORES}"$'\n'
 
 # Check load ratio (store awk output first to avoid nested $() issues)
 LOAD_HIGH=$(awk "BEGIN{v=${LOAD1}/${N_CORES}; print (v > ${LOAD_WARN_RATIO}) ? 1 : 0}")
 if [ "$LOAD_HIGH" -eq 1 ]; then
-    warn_icon "High load (${CUR_RATIO}/core)"
+    warn_icon "Load: ${CUR_RATIO}/core (high)"
 else
-    ok_icon "Load OK"
+    ok_icon "Load: ${CUR_RATIO}/core"
 fi
 
 # --- 2. Memory ---------------------------------------------------------------
-RPT+=$'\n*▸ Memory*\n'
+RPT+=$'\nMEMORY\n'
 TOTAL_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
 AVAIL_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null \
     || awk '/^MemFree:/ && !f{ f=1; print $2 }' /proc/meminfo)
@@ -103,23 +107,23 @@ fi
 TOTAL_GIB=$(awk "BEGIN{printf \"%.1f\", ${TOTAL_KB}/1024/1024}")
 
 if (( TOTAL_KB >= 8 * 1024 * 1024 )); then
-    USED_H=$(awk "BEGIN{printf \"%.1fGi\", ($USED_KB/$TOTAL_KB)*${TOTAL_GIB}}")
+    USED_H=$(awk "BEGIN{printf \"%.1f GiB\", $USED_KB/1024/1024}")
 else
-    USED_H=$(awk "BEGIN{printf \"%.0fMi\", $USED_KB/1024}")
+    USED_H=$(awk "BEGIN{printf \"%.0f MiB\", $USED_KB/1024}")
 fi
 
-RPT+="- 🧠 ${TOTAL_GIB} Gi  used: \`$USED_H (${MEM_PCT}%)\`"$'\n'
+MEMORY_TEXT="Memory: ${USED_H} of ${TOTAL_GIB} GiB used (${MEM_PCT}%)"
 
 if (( MEM_PCT >= MEM_CRIT_PCT )); then
-    crit_icon "Memory critical: ${MEM_PCT}%"
+    crit_icon "${MEMORY_TEXT} — critical"
 elif (( MEM_PCT >= MEM_WARN_PCT )); then
-    warn_icon "Memory elevated: ${MEM_PCT}%"
+    warn_icon "${MEMORY_TEXT} — elevated"
 else
-    ok_icon "Memory OK"
+    ok_icon "$MEMORY_TEXT"
 fi
 
 # --- 3. Filesystems (df) -----------------------------------------------------
-RPT+='*▸ Filesystems*'$'\n'
+RPT+=$'\nFILESYSTEMS\n'
 
 while IFS= read -r line; do
     [[ -z "$line" ]] && continue
@@ -131,16 +135,16 @@ while IFS= read -r line; do
     FS_PCT=$(echo "$line" | awk '{gsub(/%/,"",$5); print $5+0}')
 
     if (( FS_PCT >= DISK_CRIT_PCT )); then
-        crit_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used (\`$FS_SIZE\`)"
+        crit_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used (${FS_USED} of ${FS_SIZE})"
     elif (( FS_PCT >= DISK_WARN_PCT )); then
-        warn_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used"
+        warn_icon "${FS_MNT} (${FS_DEV}): ${FS_PCT}% used (${FS_USED} of ${FS_SIZE})"
     else
         ok_icon "${FS_MNT}: ${FS_PCT}% used"
     fi
-done < <(df --output=source,target,size,used,pcent 2>/dev/null | grep '/dev/' | tail -n +2)
+done < <(df -h --output=source,target,size,used,pcent 2>/dev/null | grep '/dev/' | tail -n +2)
 
 # --- 4. SMART / drive health & temperatures ------------------------------------
-RPT+=$'\n*▸ Drives (SMART)*\n'
+RPT+=$'\nDRIVES\n'
 
 if (( HAS_SM == 0 )); then
     warn_icon "smartctl not installed"
@@ -195,7 +199,7 @@ else
 fi
 
 # --- 5. mdadm RAID status ----------------------------------------------------
-RPT+=$'\n*▸ RAID (mdadm)*\n'
+RPT+=$'\nRAID\n'
 
 if (( HAS_MD == 0 )); then
     warn_icon "mdadm not installed"
@@ -215,8 +219,7 @@ else
             found { exit }
         ' /proc/mdstat 2>/dev/null)
 
-        # Square brackets start a link entity in Telegram's Markdown parser.
-        msg="\\[${level:-?}\\] ${state}"
+        msg="[${level:-?}] ${state}"
 
         if echo "${state} ${mdstat_state}" | grep -Eqi 'degraded|failed|faulty|\[[U_]*_[U_]*\]'; then
             crit_icon "RAID ${mdname}: ${msg}"
@@ -228,7 +231,7 @@ else
 
         # Show sync progress if applicable
         if [[ -n "${sync:-}" ]]; then
-            RPT+="   ▬🔧 Sync: \`${sync}\`"$'\n'
+            RPT+="   🔧 Sync: ${sync}"$'\n'
         fi
     done < <(grep '^md' /proc/mdstat 2>/dev/null | awk '{print $1}')
 
@@ -239,14 +242,14 @@ else
 fi
 
 # --- 6. Network ------------------------------------------------------------
-RPT+=$'\n*▸ Network*\n'
+RPT+=$'\nNETWORK\n'
 
 DEFAULT_ROUTE="$(ip -4 route show default 2>/dev/null | head -1)"
 GW="$(awk '{for (i=1; i<=NF; i++) if ($i == "via") {print $(i+1); exit}}' <<< "$DEFAULT_ROUTE")"
 if [[ -n "$GW" ]]; then
-    ok_icon "Gateway: \`${GW}\`"
+    ok_icon "Gateway: ${GW}"
 elif [[ -n "$DEFAULT_ROUTE" ]]; then
-    ok_icon "Default route: \`${DEFAULT_ROUTE}\`"
+    ok_icon "Default route: ${DEFAULT_ROUTE}"
 else
     warn_icon "No default route"
 fi
@@ -254,19 +257,23 @@ fi
 # Active LAN interfaces with IP
 while IFS= read -r iface; do
     ip=$(ip -4 addr show "$iface" 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -c 32)
-    [[ -n "$ip" ]] && RPT+="- \`${iface}\` → ${ip}"$'\n'
+    [[ -n "$ip" ]] && RPT+="Interface: ${iface} → ${ip}"$'\n'
 done < <(ip route show default 2>/dev/null | awk '{print $5}' | sort -u)
 
 # DNS check
 DNS_SERVERS="$(grep 'nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | head -c 128)"
-[[ -n "${DNS_SERVERS:-}" ]] && RPT+="- DNS: \`${DNS_SERVERS}\`"$'\n' 
+if [[ -n "${DNS_SERVERS:-}" ]]; then
+    while IFS= read -r dns_server; do
+        [[ -n "$dns_server" ]] && RPT+="DNS: ${dns_server}"$'\n'
+    done <<< "$DNS_SERVERS"
+fi
 
 # External IP (optional, skip on failure)
 EXT_IP=$(curl -fsS --max-time 3 https://ifconfig.me 2>/dev/null || true)
-[[ -n "$EXT_IP" ]] && RPT+="_External:_ \`${EXT_IP}\`_"$'\n'
+[[ -n "$EXT_IP" ]] && RPT+="External IP: ${EXT_IP}"$'\n'
 
 # --- 7. Swap ---------------------------------------------------------------
-RPT+=$'\n*▸ Swap*\n'
+RPT+=$'\nSWAP\n'
 SWAP_TOTAL=$(awk '/^SwapTotal:/{print $2}' /proc/meminfo)
 SWAP_FREE=$(awk '/^SwapFree:/{print $2}' /proc/meminfo)
 SWAP_USED=$(( SWAP_TOTAL - SWAP_FREE ))
@@ -278,27 +285,47 @@ else
 fi
 
 if (( SWAP_PCT >= 80 )); then
-    crit_icon "Swap: \`${SWAP_USED} KiB\` (${SWAP_PCT}%)"
+    crit_icon "Swap: ${SWAP_USED} KiB used (${SWAP_PCT}%)"
 elif (( SWAP_PCT >= 30 )); then
-    warn_icon "Swap: \`${SWAP_USED} KiB\` ($SWAP_PCT%)"
+    warn_icon "Swap: ${SWAP_USED} KiB used (${SWAP_PCT}%)"
 else
     ok_icon "Swap OK"
 fi
 
 # --- 8. Last reboot --------------------------------------------------------
-RPT+=$'\n*▸ Boot time*\n'
-LAST_REBOOT=$(who -b 2>/dev/null | awk '{print $3, $4}' || echo 'unknown')
-RPT+="🔃 \`${LAST_REBOOT}\`"$'\n'
+RPT+=$'\nBOOT\n'
+LAST_REBOOT=$(uptime -s 2>/dev/null || who -b 2>/dev/null | awk '{print $3, $4}')
+RPT+="Last reboot: ${LAST_REBOOT:-unknown}"$'\n'
 
 # --- Final status line -----------------------------------------------------
-declare -A STATUS_EMOJI=( [OK]="✅" [WARN]="⚠️" [CRITICAL]="🔴" )
-emoji="${STATUS_EMOJI[$overall_status]:-✅}"
-
-RPT+=$'\n'
-RPT+="${emoji} *Overall Status:* \`${overall_status}\`"$'\n'
+case "$overall_status" in
+    CRITICAL)
+        emoji="🔴"
+        status_label="CRITICAL"
+        ;;
+    WARN)
+        emoji="⚠️"
+        status_label="WARNING"
+        ;;
+    *)
+        emoji="✅"
+        status_label="GOOD"
+        ;;
+esac
 
 # --- Send to Telegram -------------------------------------------------------
-message="$RPT"
+SUMMARY="🖥️ SERVER HEALTH — ${HOST}"$'\n'
+SUMMARY+="${emoji} Overall status: ${status_label}"$'\n'
+
+if (( ${#ISSUES[@]} > 0 )); then
+    SUMMARY+="Why:"$'\n'
+    for issue in "${ISSUES[@]}"; do
+        SUMMARY+="• ${issue}"$'\n'
+    done
+fi
+
+SUMMARY+=$'\n'
+message="${SUMMARY}${RPT}"
 
 # Telegram has a 4096 char limit
 if (( ${#message} > 4000 )); then
@@ -306,15 +333,10 @@ if (( ${#message} > 4000 )); then
 fi
 
 telegram_request() {
-    local parse_mode="${1:-}"
     local -a form_args=(
         -F "chat_id=${CHAT_ID}"
         -F "text=${message}"
     )
-
-    if [[ -n "$parse_mode" ]]; then
-        form_args+=( -F "parse_mode=${parse_mode}" )
-    fi
 
     curl -sS --connect-timeout 5 --max-time 15 \
         "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
@@ -323,29 +345,17 @@ telegram_request() {
 
 send_tg() {
     local resp
-    local parse_mode="Markdown"
 
-    resp=$(telegram_request "$parse_mode")
+    resp=$(telegram_request)
     
     if echo "$resp" | grep -q '"ok":true'; then
         return 0
     fi
     
-    # A machine-provided value may contain Telegram Markdown control characters.
-    # Deliver as plain text rather than dropping the entire health report.
-    if echo "$resp" | grep -qi "can't parse entities"; then
-        parse_mode=""
-        resp=$(telegram_request "$parse_mode")
-        if echo "$resp" | grep -q '"ok":true'; then
-            printf 'Telegram rejected Markdown; report sent as plain text.\n' >&2
-            return 0
-        fi
-    fi
-
     # Rate-limit / network fallback (429 Too Many Requests)
     if echo "$resp" | grep -qi 'retry'; then
         sleep 15
-        resp=$(telegram_request "$parse_mode")
+        resp=$(telegram_request)
     fi
     
     if echo "$resp" | grep -q '"ok":true'; then

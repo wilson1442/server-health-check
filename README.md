@@ -13,7 +13,8 @@ health and sends one summary to Telegram.
 - Swap use and last boot time
 
 Each result is marked OK, warning, or critical. The final status reflects the
-most severe result in the report.
+most severe result in the report. Warning and critical reports list the reasons
+at the top so the problem is immediately visible.
 
 ## Install
 
