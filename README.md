@@ -75,14 +75,47 @@ Set up in root crontab (run every 4 hours):
 ```bash
 crontab -e
 # Add the following line:
-0 */4 * * * env TELEGRAM_BOT_TOKEN="<TOKEN>" TELEGRAM_CHAT_ID="-<ID>"     /usr/local/sbin/server-health-check.sh >> /var/log/health-check.log 2>&1
+0 */4 * * * env TELEGRAM_BOT_TOKEN="<replace_me_with_your_bot_token>" TELEGRAM_CHAT_ID="-100xxxxxxx_OR_your_user_id" /usr/local/sbin/server-health-check.sh >> /var/log/health-check.log 2>&1
 ```
 
 Or run manually for testing:
 
 ```bash
-env TELEGRAM_BOT_TOKEN="your_bot_token" TELEGRAM_CHAT_ID="-your_chat_id"     bash /usr/local/sbin/server-health-check.sh
+TELEGRAM_BOT_TOKEN="<replace_me_with_your_bot_token>" TELEGRAM_CHAT_ID="-100xxxxxxx_OR_your_user_id" bash /usr/local/sbin/server-health-check.sh
 ```
+
+
+### 5. Keep the repo updated on your server
+
+When the script is improved upstream, pull the latest version:
+
+```bash
+cd /usr/local/sbin/../server-health-check   # or wherever you cloned it into
+git pull origin main
+```
+
+If you copied just the script (not a full clone), move to one first:
+
+```bash
+# Step 1 — convert your copy into a proper git repo
+cd /usr/local/sbin/
+mkdir server-health-check && mv server-health-check.sh server-health-check/
+cd server-health-check
+git init
+git remote add origin https://github.com/wilson1442/server-health-check.git
+
+# Step 2 — pull updates going forward
+git pull origin main
+```
+
+Alternatively, just re-copy from the repo each time:
+
+```bash
+cd /tmp && git clone https://github.com/wilson1442/server-health-check.git
+sudo cp server-health-check/server-health-check.sh /usr/local/sbin/
+```
+
+> **Note:** Your credentials are stored locally in your crontab, `~/.bashrc`, or `/etc/default/health-check`. They are never in the repository and won't be affected by `git pull`.
 
 ## Telegram Report Format
 
