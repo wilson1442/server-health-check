@@ -62,8 +62,9 @@ CUR_RATIO=$(awk "BEGIN{printf \"%.2f\", ${LOAD1}/${N_CORES}}")
 RPT+="- 💻 \`${CPU_MODEL}\`\n"
 RPT+="- 🕹️  Cores: \`${N_CORES} | Ratio: ${CUR_RATIO}/core\`\n\n"
 
-# Check load ratio
-if (( $(awk "BEGIN{print (${LOAD1}/${N_CORES}) > ${LOAD_WARN_RATIO}}" )); then
+# Check load ratio (store awk output first to avoid nested $() issues)
+LOAD_HIGH=$(awk "BEGIN{v=${LOAD1}/${N_CORES}; print (v > ${LOAD_WARN_RATIO}) ? 1 : 0}")
+if [ "$LOAD_HIGH" -eq 1 ]; then
     warn_icon "High load (${CUR_RATIO}/core)" && overall_status="WARN"
 else
     ok_icon "Load OK"
