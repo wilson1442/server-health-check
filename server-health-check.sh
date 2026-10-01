@@ -150,7 +150,11 @@ RPT+=$'\nDRIVES\n'
 if (( HAS_SM == 0 )); then
     warn_icon "smartctl not installed"
 else
-    mapfile -t smart_devices < <(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '$2 == "disk" {print $1}')
+    # ZFS zvols (/dev/zd*) are virtual block devices and do not expose SMART.
+    mapfile -t smart_devices < <(
+        lsblk -dnpo NAME,TYPE 2>/dev/null \
+            | awk '$2 == "disk" && $1 !~ /^\/dev\/zd[0-9]+$/ {print $1}'
+    )
 
     if (( ${#smart_devices[@]} == 0 )); then
         warn_icon "No physical disks found"
@@ -238,7 +242,7 @@ else
 
     # If no arrays found, mention it
     if ! grep -q '^md' /proc/mdstat 2>/dev/null; then
-        warn_icon "No active md arrays — using software? Or LVM/HBA card?"
+        RPT+="ℹ️ No active md arrays — skipped"$'\n'
     fi
 fi
 

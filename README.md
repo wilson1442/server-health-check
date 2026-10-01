@@ -7,7 +7,7 @@ health and sends one summary to Telegram.
 
 - CPU load and memory use
 - Mounted filesystem usage
-- SMART health and disk temperature
+- SMART health and temperature for physical disks (virtual ZFS volumes are skipped)
 - Linux software RAID (`mdadm`)
 - ZFS pool health, capacity, scans/resilvers, and data errors
 - Default route, local addresses, DNS, and external IP
